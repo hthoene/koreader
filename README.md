@@ -2,6 +2,12 @@
 
 #### KOReader is a document viewer primarily aimed at e-ink readers.
 
+> [!NOTE]
+> This is a fork of [KOReader](https://github.com/koreader/koreader) adding native **Windows** support:
+> see [KOReader for Windows](platform/win32/README.md), and the [releases](https://github.com/hthoene/koreader/releases)
+> for downloads. The related changes to its dependencies are in the `windows-support` branches of the
+> [koreader-base](https://github.com/hthoene/koreader-base) and [crengine](https://github.com/hthoene/crengine) forks.
+
 [![AGPL Licence][badge-license]](COPYING)
 [![Latest release][badge-release]][link-gh-releases]
 [![Gitter][badge-gitter]][link-gitter]
