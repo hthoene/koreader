@@ -22,6 +22,11 @@ Otherwise, compatible versions of the Android NDK and SDK will be downloaded and
 
 NOTE: If you want to use your own installed tools, please make sure to use the following supported versions: **NDKr23c** and the SDK for Android 9 (**API level 28**).
 
+#### for Windows
+
+KOReader for Windows is cross-compiled with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw): its `bin` directory must be in your `PATH`.
+The [Windows Dockerfile](../platform/win32/Dockerfile) provides a ready-to-use toolchain image.
+
 #### for embedded Linux devices
 
 Cross compile toolchains are available for Ubuntu users through these commands:
@@ -51,6 +56,10 @@ For both Ubuntu and Debian, install the packages:
 ```
 sudo apt-get install openjdk-17-jdk-headless p7zip-full
 ```
+
+#### for Windows
+
+Building the installer requires NSIS (`nsis` package).
 
 #### for Debian
 
@@ -101,6 +110,14 @@ See [Building](https://github.com/koreader/koreader/blob/master/doc/Building.md)
 ```
 ./kodev release debian-armhf
 ```
+
+### Desktop Windows (x86_64)
+
+```
+./kodev release win32
+```
+
+On a Windows host (or any host with Docker), use `platform/win32/build.sh` instead, see [KOReader for Windows](../platform/win32/README.md#building).
 
 ### Desktop macOS
 
