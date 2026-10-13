@@ -3,7 +3,6 @@
 ; Expected definitions (c.f. `make/win32.mk`):
 ; - VERSION: KOReader version (e.g. `v2026.07.2-241-g3bfdadcb5_2026-10-13`)
 ; - VERSION_NUM: numeric version (e.g. `2026.7.2.241`)
-; - ARCH: target architecture (e.g. `x86_64`)
 ; - SRC_DIR: directory with the files to install
 ; - FILES_LIST: list of the installed files (c.f. `gen_files_list.sh`)
 ; - OUT_FILE: path of the generated installer
@@ -36,26 +35,14 @@ VIAddVersionKey "FileDescription" "${APP_NAME} installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "GNU AGPL v3"
 
-; Multi-user support: per-user installation (no administrator rights
-; needed) by default, or for all users. {{{
-
-!define MULTIUSER_EXECUTIONLEVEL Highest
-!define MULTIUSER_MUI
-!define MULTIUSER_INSTALLMODE_COMMANDLINE
-!define MULTIUSER_INSTALLMODE_INSTDIR "${APP_NAME}"
-!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_KEY "${UNINSTALL_KEY}"
-!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_VALUENAME "InstallLocation"
-!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "${UNINSTALL_KEY}"
-!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallLocation"
-!if "${ARCH}" == "x86_64"
-!define MULTIUSER_USE_PROGRAMFILES64
-!endif
-!include MultiUser.nsh
-
-; }}}
+; Per-user installation: no administrator rights needed (no UAC prompt).
+RequestExecutionLevel user
+InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
+InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 
 !include MUI2.nsh
 !include FileFunc.nsh
+!include LogicLib.nsh
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -65,7 +52,6 @@ VIAddVersionKey "LegalCopyright" "GNU AGPL v3"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
-!insertmacro MULTIUSER_PAGE_INSTALLMODE
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
@@ -75,14 +61,6 @@ VIAddVersionKey "LegalCopyright" "GNU AGPL v3"
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
-
-Function .onInit
-    !insertmacro MULTIUSER_INIT
-FunctionEnd
-
-Function un.onInit
-    !insertmacro MULTIUSER_UNINIT
-FunctionEnd
 
 ; File types offered in the "Open with" menu (the default handlers are left alone). {{{
 
@@ -106,12 +84,12 @@ FunctionEnd
 !macroend
 
 !macro RegisterFileType EXT
-    WriteRegStr SHCTX "${APPLICATION_KEY}\SupportedTypes" ".${EXT}" ""
-    WriteRegStr SHCTX "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}" ""
+    WriteRegStr HKCU "${APPLICATION_KEY}\SupportedTypes" ".${EXT}" ""
+    WriteRegStr HKCU "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}" ""
 !macroend
 
 !macro UnregisterFileType EXT
-    DeleteRegValue SHCTX "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}"
+    DeleteRegValue HKCU "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}"
 !macroend
 
 ; }}}
@@ -123,7 +101,7 @@ Section "${APP_NAME}" SecMain
     ; Upgrade: remove the files installed by the previous version (using its
     ; own uninstaller, which knows the exact list). The user data is kept.
     IfFileExists "$INSTDIR\uninstall.exe" 0 +2
-        ExecWait '"$INSTDIR\uninstall.exe" /S /$MultiUser.InstallMode _?=$INSTDIR'
+        ExecWait '"$INSTDIR\uninstall.exe" /S /UPGRADE _?=$INSTDIR'
 
     File /r "${SRC_DIR}\*.*"
 
@@ -133,30 +111,30 @@ Section "${APP_NAME}" SecMain
     CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
 
     ; "Open with" support.
-    WriteRegStr SHCTX "${APPLICATION_KEY}" "FriendlyAppName" "${APP_NAME}"
-    WriteRegStr SHCTX "${APPLICATION_KEY}\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
-    WriteRegStr SHCTX "${APPLICATION_KEY}\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
-    WriteRegStr SHCTX "Software\Classes\${PROGID}" "" "${APP_NAME} document"
-    WriteRegStr SHCTX "Software\Classes\${PROGID}\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
-    WriteRegStr SHCTX "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
+    WriteRegStr HKCU "${APPLICATION_KEY}" "FriendlyAppName" "${APP_NAME}"
+    WriteRegStr HKCU "${APPLICATION_KEY}\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
+    WriteRegStr HKCU "${APPLICATION_KEY}\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
+    WriteRegStr HKCU "Software\Classes\${PROGID}" "" "${APP_NAME} document"
+    WriteRegStr HKCU "Software\Classes\${PROGID}\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
+    WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
     !insertmacro ForEachFileType RegisterFileType
 
     ; App path (so `koreader` can be started from the "Run" dialog).
-    WriteRegStr SHCTX "${APP_PATHS_KEY}" "" "$INSTDIR\${APP_EXE}"
+    WriteRegStr HKCU "${APP_PATHS_KEY}" "" "$INSTDIR\${APP_EXE}"
 
     ; Uninstall information.
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE},0"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "Publisher" "KOReader contributors"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "URLInfoAbout" "https://koreader.rocks"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe" /$MultiUser.InstallMode'
-    WriteRegStr SHCTX "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /$MultiUser.InstallMode /S'
-    WriteRegDWORD SHCTX "${UNINSTALL_KEY}" "NoModify" 1
-    WriteRegDWORD SHCTX "${UNINSTALL_KEY}" "NoRepair" 1
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE},0"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "KOReader contributors"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout" "https://koreader.rocks"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+    WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
+    WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
     ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-    WriteRegDWORD SHCTX "${UNINSTALL_KEY}" "EstimatedSize" $0
+    WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" $0
 
     ; Notify the shell of the file associations changes (`SHCNE_ASSOCCHANGED`).
     System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
@@ -172,6 +150,15 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
+    ${GetParameters} $0
+    ClearErrors
+    ${GetOptions} $0 "/UPGRADE" $1
+    ${If} ${Errors}
+        ; Files KOReader itself creates in its installation directory (kept on upgrade).
+        Delete "$INSTDIR\version.log"
+        Delete "$INSTDIR\data\cr3.ini"
+    ${EndIf}
+
     ; Only remove the files we installed (and the then empty directories):
     ; the user data is stored elsewhere, and is kept.
     !include "${FILES_LIST}"
@@ -182,10 +169,10 @@ Section "Uninstall"
     Delete "$DESKTOP\${APP_NAME}.lnk"
 
     !insertmacro ForEachFileType UnregisterFileType
-    DeleteRegKey SHCTX "Software\Classes\${PROGID}"
-    DeleteRegKey SHCTX "${APPLICATION_KEY}"
-    DeleteRegKey SHCTX "${APP_PATHS_KEY}"
-    DeleteRegKey SHCTX "${UNINSTALL_KEY}"
+    DeleteRegKey HKCU "Software\Classes\${PROGID}"
+    DeleteRegKey HKCU "${APPLICATION_KEY}"
+    DeleteRegKey HKCU "${APP_PATHS_KEY}"
+    DeleteRegKey HKCU "${UNINSTALL_KEY}"
 
     System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

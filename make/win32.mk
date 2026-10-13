@@ -72,7 +72,6 @@ update-installer: update-prepare
 	makensis -V3 -INPUTCHARSET UTF8 \
 		-DVERSION='$(VERSION)' \
 		-DVERSION_NUM='$(subst $(comma),.,$(or $(WIN32_VERSION_NUM),0,0,0,0))' \
-		-DARCH='$(WIN32_ARCH)' \
 		-DSRC_DIR='$(abspath $(WIN32_RELEASE_DIR))' \
 		-DFILES_LIST='$(abspath $(WIN32_STAGING_DIR)/files_list.nsh)' \
 		-DOUT_FILE='$(abspath $(WIN32_INSTALLER))' \
