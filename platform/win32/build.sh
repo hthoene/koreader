@@ -107,7 +107,7 @@ docker run --rm --init \
 container="$(docker create --volume "${volume}:/build" "${image}")"
 trap 'docker rm "${container}" >/dev/null' EXIT
 for artifact in $(docker run --rm --volume "${volume}:/build" "${image}" \
-                  sh -c 'cd /build/koreader && ls koreader-win32-*.zip koreader-win32-*-setup.exe'); do
+    sh -c 'cd /build/koreader && ls koreader-win32-*.zip koreader-win32-*-setup.exe'); do
     docker cp "${container}:/build/koreader/${artifact}" .
     echo "${artifact}"
 done
