@@ -1348,6 +1348,62 @@ function FileManager:copyRecursive(from, to)
     return ffiUtil.execute(self.cp_bin, "-r", from, to ) == 0
 end
 
+if jit.os == "Windows" then
+    -- No mv/cp there: native implementations, with the same semantics
+    -- (when `to` is an existing directory, `from` is moved/copied into it).
+
+    local function getDestination(from, to)
+        if lfs.attributes(to, "mode") == "directory" then
+            return ffiUtil.joinPath(to, ffiUtil.basename(from))
+        end
+        return to
+    end
+
+    local function copyRecursive(from, to)
+        if lfs.attributes(from, "mode") ~= "directory" then
+            local err = ffiUtil.copyFile(from, to)
+            if err then
+                logger.warn("FileManager: cannot copy", from, "to", to, err)
+            end
+            return err == nil
+        end
+        if to:sub(1, #from + 1) == from .. "/" then
+            logger.warn("FileManager: cannot copy", from, "into itself")
+            return false
+        end
+        if lfs.attributes(to, "mode") ~= "directory" and not lfs.mkdir(to) then
+            logger.warn("FileManager: cannot create directory", to)
+            return false
+        end
+        for name in lfs.dir(from) do
+            if name ~= "." and name ~= ".." then
+                if not copyRecursive(ffiUtil.joinPath(from, name), ffiUtil.joinPath(to, name)) then
+                    return false
+                end
+            end
+        end
+        return true
+    end
+
+    function FileManager:moveFile(from, to)
+        to = getDestination(from, to)
+        if os.rename(from, to) then
+            return true
+        end
+        -- Directories cannot be moved to another drive: copy, then remove.
+        if lfs.attributes(from, "mode") == "directory" and to:sub(1, 2):lower() ~= from:sub(1, 2):lower() then
+            return copyRecursive(from, to) and ffiUtil.purgeDir(from) ~= nil
+        end
+        return false
+    end
+
+    function FileManager:copyFileFromTo(from, to)
+        return copyRecursive(from, getDestination(from, to))
+    end
+
+    FileManager.copyRecursive = FileManager.copyFileFromTo
+end
+
 function FileManager:onShowFolderMenu()
     local button_dialog
     local function genButton(button_text, button_path)
