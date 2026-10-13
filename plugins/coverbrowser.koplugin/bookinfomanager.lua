@@ -9,6 +9,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local RenderImage = require("ui/renderimage")
 local SQ3 = require("lua-ljsqlite3/init")
 local UIManager = require("ui/uimanager")
+local Worker = require("worker")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
@@ -17,6 +18,16 @@ local time = require("ui/time")
 local _ = require("gettext")
 local N_ = _.ngettext
 local T = FFIUtil.template
+
+-- Our directory (to find our modules when running tasks in a sub-process).
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
+
+-- Task to run one of our functions in a sub-process (c.f. `Worker.task`).
+local function newTask(func, ...)
+    local task = Worker.task("bookinfomanager", func, ...)
+    task.path = plugin_dir
+    return task
+end
 
 -- Database definition
 local BOOKINFO_DB_VERSION = 20201210
@@ -420,12 +431,13 @@ function BookInfoManager:getDocProps(filepath)
 end
 
 function BookInfoManager:extractBookInfo(filepath, cover_specs)
-    -- This will be run in a subprocess (except when it's not supported, c.f. extractInBackground)
+    -- This will be run in a subprocess
     -- We use a temporary directory for cre cache (that will not affect parent process),
     -- so we don't fill the main cache with books we're not actually reading
-    -- NOTE: when run in-process, we must not change the main process cache settings
-    --       (there's no rendering anyway, as we only load the metadata).
-    if not self.cre_cache_overriden and FFIUtil.canFork() then
+    -- NOTE: if run in-process anyway (e.g. when a sub-process can't be started), we
+    --       must not change the main process cache settings (there's no rendering
+    --       anyway, as we only load the metadata).
+    if not self.cre_cache_overriden and Worker.isInSubProcess() then
         -- We need to init engine (if no crengine book has yet been opened),
         -- so it does not reset our temporary cache dir when we first open
         -- a crengine book for extraction.
@@ -682,40 +694,22 @@ function BookInfoManager:terminateBackgroundJobs()
     for i=1, #self.subprocesses_pids do
         FFIUtil.terminateSubProcess(self.subprocesses_pids[i])
     end
-    if self.in_process_extraction then
-        logger.dbg("stopping in-process extraction")
-        UIManager:unschedule(self.in_process_extraction)
-        self.in_process_extraction = nil
-    end
 end
 
 function BookInfoManager:isExtractingInBackground()
-    return #self.subprocesses_pids > 0 or self.in_process_extraction ~= nil
+    return #self.subprocesses_pids > 0
 end
 
--- Without sub-process support (e.g. on Windows), extract the books
--- in-process, one at a time between UI events, so the UI stays responsive.
-function BookInfoManager:extractInProcess(files)
-    local idx = 0
-    local extract
-    extract = function()
-        idx = idx + 1
-        local file = files[idx]
-        logger.dbg("  in-process extracting:", file.filepath)
-        local ok, err = xpcall(self.extractBookInfo, debug.traceback, self, file.filepath, file.cover_specs)
-        if not ok then
-            logger.warn("error extracting book info:", err)
-        end
-        if idx < #files then
-            UIManager:scheduleIn(0.01, extract)
-        else
-            logger.dbg("  in-process extraction done")
-            self.in_process_extraction = nil
-        end
+-- Task run in a sub-process (c.f. extractInBackground)
+function BookInfoManager:extractBookInfos(files)
+    logger.dbg("  BG extraction started")
+    for idx = 1, #files do
+        local filepath = files[idx].filepath
+        local cover_specs = files[idx].cover_specs
+        logger.dbg("  BG extracting:", filepath)
+        self:extractBookInfo(filepath, cover_specs)
     end
-    self.in_process_extraction = extract
-    UIManager:scheduleIn(0.01, extract)
-    return true
+    logger.dbg("  BG extraction done")
 end
 
 function BookInfoManager:extractInBackground(files)
@@ -726,25 +720,12 @@ function BookInfoManager:extractInBackground(files)
     -- Terminate any previous extraction background task that would be still running
     self:terminateBackgroundJobs()
 
-    if not FFIUtil.canFork() then
-        return self:extractInProcess(files)
-    end
-
     -- Close current handle on sqlite, so it's not shared by both processes
     -- (both processes will re-open one when needed)
     BookInfoManager:closeDbConnection()
 
     -- Define task that will be run in subprocess
-    local task = function()
-        logger.dbg("  BG extraction started")
-        for idx = 1, #files do
-            local filepath = files[idx].filepath
-            local cover_specs = files[idx].cover_specs
-            logger.dbg("  BG extracting:", filepath)
-            self:extractBookInfo(filepath, cover_specs)
-        end
-        logger.dbg("  BG extraction done")
-    end
+    local task = newTask(":extractBookInfos", files)
 
     self.cleanup_needed = true -- so we will remove temporary cache directory created by subprocess
 
@@ -754,9 +735,9 @@ function BookInfoManager:extractInBackground(files)
     end
 
     -- Run task in sub-process, and remember its pid
-    local task_pid = FFIUtil.runInSubProcess(task)
+    local task_pid, err = Worker.runInSubProcess(task)
     if not task_pid then
-        logger.warn("Failed launching background extraction sub-process (fork failed)")
+        logger.warn("Failed launching background extraction sub-process:", err)
         return false -- let caller know it failed
     end
     -- No straight control flow exists for background task completion here, so we bump prevent
@@ -794,7 +775,8 @@ function BookInfoManager:cleanUp()
     end
 end
 
-local function findFilesInDir(path, recursive)
+-- (Sorted list of the documents in a directory: a module function, so it can be run in a sub-process.)
+function BookInfoManager.findFilesInDir(path, recursive)
     local dirs = {path}
     local files = {}
     while #dirs ~= 0 do
@@ -815,6 +797,29 @@ local function findFilesInDir(path, recursive)
             end
         end
         dirs = new_dirs
+    end
+    table.sort(files)
+    return files
+end
+
+-- (Files that need to be extracted: a method, so it can be run in a sub-process.)
+function BookInfoManager:getFilesToExtract(all_files, cover_specs)
+    local files = {}
+    for _, filepath in pairs(all_files) do
+        local bookinfo = self:getBookInfo(filepath)
+        local to_extract = not bookinfo
+        if bookinfo and cover_specs and not bookinfo.ignore_cover then
+            if bookinfo.cover_fetched then
+                if bookinfo.has_cover and BookInfoManager.isCachedCoverInvalid(bookinfo, cover_specs) then
+                    to_extract = true
+                end
+            else
+                to_extract = true
+            end
+        end
+        if to_extract then
+            table.insert(files, filepath)
+        end
     end
     return files
 end
@@ -873,9 +878,7 @@ Do you want to prune the cache of removed books?]]
             info = InfoMessage:new{text = _("Pruning cache of removed books…")}
             UIManager:show(info)
             UIManager:forceRePaint()
-            completed, summary = Trapper:dismissableRunInSubprocess(function()
-                return self:removeNonExistantEntries()
-            end, info)
+            completed, summary = Trapper:dismissableRunInSubprocess(newTask(":removeNonExistantEntries"), info)
             if not completed then
                 if confirm_abort() then
                     return
@@ -897,11 +900,7 @@ Do you want to prune the cache of removed books?]]
         info = InfoMessage:new{text = _("Looking for books to index…")}
         UIManager:show(info)
         UIManager:forceRePaint()
-        completed, files = Trapper:dismissableRunInSubprocess(function()
-            local filepaths = findFilesInDir(path, recursive)
-            table.sort(filepaths)
-            return filepaths
-        end, info)
+        completed, files = Trapper:dismissableRunInSubprocess(newTask("findFilesInDir", path, recursive), info)
         if not completed then
             if confirm_abort() then
                 return
@@ -929,26 +928,7 @@ Do you want to prune the cache of removed books?]]
             UIManager:show(info)
             UIManager:forceRePaint()
             FFIUtil.sleep(2) -- Let the user see that
-            completed, files = Trapper:dismissableRunInSubprocess(function()
-                files = {}
-                for _, filepath in pairs(all_files) do
-                    local bookinfo = self:getBookInfo(filepath)
-                    local to_extract = not bookinfo
-                    if bookinfo and cover_specs and not bookinfo.ignore_cover then
-                        if bookinfo.cover_fetched then
-                            if bookinfo.has_cover and BookInfoManager.isCachedCoverInvalid(bookinfo, cover_specs) then
-                                to_extract = true
-                            end
-                        else
-                            to_extract = true
-                        end
-                    end
-                    if to_extract then
-                        table.insert(files, filepath)
-                    end
-                end
-                return files
-            end, info)
+            completed, files = Trapper:dismissableRunInSubprocess(newTask(":getFilesToExtract", all_files, cover_specs), info)
             if not completed then
                 if confirm_abort() then
                     return
@@ -1008,9 +988,7 @@ Do you want to prune the cache of removed books?]]
         local d = info.movable[1].dimen
         Screen.refreshUI(Screen, d.x, d.y, d.w, d.h)
 
-        completed, success = Trapper:dismissableRunInSubprocess(function()
-            return self:extractBookInfo(filepath, cover_specs)
-        end, info)
+        completed, success = Trapper:dismissableRunInSubprocess(newTask(":extractBookInfo", filepath, cover_specs), info)
         if not completed then
             if confirm_abort() then
                 break
