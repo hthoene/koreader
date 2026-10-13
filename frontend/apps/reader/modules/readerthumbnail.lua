@@ -337,23 +337,41 @@ function ReaderThumbnail:ensureTileGeneration()
     end
 end
 
+function ReaderThumbnail:_makeTile(bb, page, width, height)
+    -- Scale the page image to fit in the requested size
+    local scale_factor = math.min(width / bb:getWidth(), height / bb:getHeight())
+    local target_w = math.floor(bb:getWidth() * scale_factor)
+    local target_h = math.floor(bb:getHeight() * scale_factor)
+    -- local time = require("ui/time")
+    -- local start_time = time.now()
+    local tile = TileCacheItem:new{
+        bb = RenderImage:scaleBlitBuffer(bb, target_w, target_h, true),
+        pageno = page,
+    }
+    tile.size = tonumber(tile.bb.stride) * tile.bb.h
+    -- logger.info("tile size", tile.bb.w, tile.bb.h, "=>", tile.size)
+    -- logger.info(string.format("  scaling took %.3f seconds, %d bpp", time.to_s(time.since(start_time)), tile.bb:getBpp()))
+    return tile
+end
+
 function ReaderThumbnail:startTileGeneration(request)
+    if not ffiutil.canFork() then
+        -- No subprocess available: generate the tile right away, it will
+        -- be handed over on the next check (giving the UI some breathing room).
+        local ok, tile = xpcall(function()
+            return self:_makeTile(self:_getPageImageInProcess(request.page), request.page, request.width, request.height)
+        end, debug.traceback)
+        if ok then
+            request.tile = tile
+            return true
+        end
+        logger.warn("PageBrowserWidget thumbnail generation failure:", tile)
+        return false
+    end
     local pid, parent_read_fd = ffiutil.runInSubProcess(function(pid, child_write_fd)
         -- Get page image as if drawn on the screen
         local bb = self:_getPageImage(request.page)
-        -- Scale it to fit in the requested size
-        local scale_factor = math.min(request.width / bb:getWidth(), request.height / bb:getHeight())
-        local target_w = math.floor(bb:getWidth() * scale_factor)
-        local target_h = math.floor(bb:getHeight() * scale_factor)
-        -- local time = require("ui/time")
-        -- local start_time = time.now()
-        local tile = TileCacheItem:new{
-            bb = RenderImage:scaleBlitBuffer(bb, target_w, target_h, true),
-            pageno = request.page,
-        }
-        tile.size = tonumber(tile.bb.stride) * tile.bb.h
-        -- logger.info("tile size", tile.bb.w, tile.bb.h, "=>", tile.size)
-        -- logger.info(string.format("  scaling took %.3f seconds, %d bpp", time.to_s(time.since(start_time)), tile.bb:getBpp()))
+        local tile = self:_makeTile(bb, request.page, request.width, request.height)
         -- bb:free() -- no need to spend time freeing, we're dying soon anyway!
 
         ffiutil.writeToFD(child_write_fd, self.codec.serialize(tile:totable()), true)
@@ -369,6 +387,15 @@ function ReaderThumbnail:startTileGeneration(request)
 end
 
 function ReaderThumbnail:checkTileGeneration(request)
+    if request.tile then -- generated in-process
+        if self.tile_cache then
+            self.tile_cache:insert(request.hash, request.tile)
+        end
+        if request.when_generated_callback then -- not cancelled
+            request.when_generated_callback(request.tile, request.batch_id, true)
+        end
+        return false
+    end
     local pid, parent_read_fd = request.pid, request.parent_read_fd
     local stuff_to_read = ffiutil.getNonBlockingReadSize(parent_read_fd) ~= 0
     local subprocess_done = ffiutil.isSubProcessDone(pid)
@@ -519,6 +546,56 @@ function ReaderThumbnail:_getPageImage(page)
         end
     end
 
+    return bb
+end
+
+function ReaderThumbnail:_getPageImageInProcess(page)
+    -- Without subprocesses (e.g. on Windows), the page image is drawn in our own
+    -- process, so we must not touch the document or view state like _getPageImage()
+    -- does: we only draw the page content (no highlights, dogear, or rendering
+    -- tweaks), and restore the document position.
+    local document = self.ui.document
+    local target_w, target_h = Screen:getWidth(), Screen:getHeight()
+
+    if self.ui.rolling then
+        local bb = Blitbuffer.new(target_w, target_h, self.bb_type)
+        local pos = document:getCurrentPos()
+        document:gotoPage(page)
+        local x, w = 0, target_w
+        if document:getVisiblePageCount() == 2 then
+            -- Only keep our page from the 2 pages view
+            w = math.floor(target_w / 2)
+            if document:getCurrentPage() ~= page then
+                x = target_w - w
+            end
+        end
+        document:drawCurrentView(bb, 0, 0, Geom:new{ w = target_w, h = target_h })
+        document:gotoPos(pos)
+        -- Crop out the top alt status bar if enabled
+        local header_height = document:getHeaderHeight()
+        if x == 0 and w == target_w and header_height == 0 then
+            return bb
+        end
+        -- (copied, as the tile may end up being this very buffer)
+        local page_bb = bb:viewport(x, header_height, w, target_h - header_height):copy()
+        bb:free()
+        return page_bb
+    end
+
+    -- With PDF/DJVU/Pics, draw the native page (no reflow, no crop...), scaled to fit
+    -- our target size (avoid the document drawing methods, as they honor reflow).
+    local Document = require("document/document")
+    local native_dimen = Document.getNativePageDimensions(document, page)
+    local zoom = math.min(target_w / native_dimen.w, target_h / native_dimen.h)
+    local rect = Document.getPageDimensions(document, page, zoom, 0)
+    local state = self.ui.view.state
+    local tile = Document.renderPage(document, page, rect, zoom, 0, state.gamma, state.saturation)
+    local bb = Blitbuffer.new(rect.w, rect.h, self.bb_type)
+    if document.configurable.nightmode_document == 1 and Screen.night_mode then
+        bb:invertblitFrom(tile.bb, 0, 0, rect.x - tile.excerpt.x, rect.y - tile.excerpt.y, rect.w, rect.h)
+    else
+        bb:blitFrom(tile.bb, 0, 0, rect.x - tile.excerpt.x, rect.y - tile.excerpt.y, rect.w, rect.h)
+    end
     return bb
 end
 
