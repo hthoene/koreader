@@ -280,9 +280,7 @@ local function get_pthread()
         return cached_pthread
     end
     local candidates, ok
-    if ffi.os == "Windows" then
-        candidates = {"libwinpthread-1.dll"}
-    elseif FFIUtil.isAndroid() then
+    if FFIUtil.isAndroid() then
         -- pthread directives are in Bionic library on Android
         candidates = {"libc.so"}
     else
@@ -313,13 +311,22 @@ function KoptInterface:reflowPage(doc, pageno, bbox, background)
     page:close()
     -- Reflow.
     if background then
-        local pthread = get_pthread()
-        local rf_thread = ffi.new("pthread_t[1]")
-        local attr = ffi.new("pthread_attr_t[1]")
-        pthread.pthread_attr_init(attr)
-        pthread.pthread_attr_setdetachstate(attr, pthread.PTHREAD_CREATE_DETACHED)
-        pthread.pthread_create(rf_thread, attr, KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp, ffi.cast("void*", kc))
-        pthread.pthread_attr_destroy(attr)
+        if ffi.os == "Windows" then
+            require("ffi/win32_h")
+            local thread = ffi.C.CreateThread(nil, 0, ffi.cast("void *", KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp),
+                                              ffi.cast("void *", kc), 0, nil)
+            if thread ~= nil then
+                ffi.C.CloseHandle(thread) -- detached
+            end
+        else
+            local pthread = get_pthread()
+            local rf_thread = ffi.new("pthread_t[1]")
+            local attr = ffi.new("pthread_attr_t[1]")
+            pthread.pthread_attr_init(attr)
+            pthread.pthread_attr_setdetachstate(attr, pthread.PTHREAD_CREATE_DETACHED)
+            pthread.pthread_create(rf_thread, attr, KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp, ffi.cast("void*", kc))
+            pthread.pthread_attr_destroy(attr)
+        end
     else
         KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp(kc)
     end

@@ -29,6 +29,13 @@ local function getDir(isUser)
         if jit.os == "OSX" then
             return isUser and home .. "/" .. MACOS_FONT_PATH
                            or "/" .. MACOS_FONT_PATH
+        elseif jit.os == "Windows" then
+            -- NOTE: fonts installed for the current user only (Windows 10 1809+) go to the user directory.
+            local localappdata = os.getenv("LOCALAPPDATA")
+            if isUser then
+                return localappdata and localappdata:gsub("\\", "/") .. "/Microsoft/Windows/Fonts"
+            end
+            return (os.getenv("WINDIR") or "C:/Windows"):gsub("\\", "/") .. "/Fonts"
         else
             return isUser and LINUX_FONT_PATH
                            or LINUX_SYS_FONT_PATH

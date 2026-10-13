@@ -243,6 +243,20 @@ function SystemStat:appendProcessInfo()
 end
 
 function SystemStat:appendStorageInfo()
+    if jit.os == "Windows" then
+        local ffiUtil = require("ffi/util")
+        self:put({_("Storage information"), ""})
+        for __, drive in ipairs(require("ffi/win32").getDrives()) do
+            local total, free, available = ffiUtil.df(drive.path)
+            if total and total > 0 then
+                self:put({_("  Mount point"), drive.path})
+                self:put({_("    Available"), util.getFriendlySize(available)})
+                self:put({_("    Total"), util.getFriendlySize(total)})
+                self:put({_("    Used percentage"), string.format("%d%%", math.floor((total - free) / total * 100 + 0.5))})
+            end
+        end
+        return
+    end
     if self.storage_filter == nil then return end
 
     local std_out = io.popen(

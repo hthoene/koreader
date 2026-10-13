@@ -1,0 +1,111 @@
+name: Windows
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+
+  build:
+
+    name: Windows x86-64
+    runs-on: ubuntu-26.04
+
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      IMAGE: koreader/kowin32
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          filter: tree:0
+          show-progress: false
+
+      - name: Checkout submodules
+        run: git submodule update --depth 1 --init --jobs 4 --recursive
+
+      - name: Build toolchain image
+        run: docker build --tag "${IMAGE}" platform/win32
+
+      - name: Restore build cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: win32-ccache-${{ github.sha }}
+          restore-keys: win32-ccache-
+
+      - name: Build
+        run: |
+          mkdir -p "${CCACHE_DIR}"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env CI \
+            --env HOME=/tmp \
+            --env CCACHE_DIR=/koreader/.ccache \
+            --volume "${PWD}:/koreader" \
+            --workdir /koreader \
+            "${IMAGE}" \
+            bash -c 'git config --global --add safe.directory "*" && ccache --max-size=500M && ccache --zero-stats && ./kodev release win32 && ccache --show-stats'
+
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: win32-ccache-${{ github.sha }}
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-artifacts
+        with:
+          patterns: |
+            koreader-win32-*.zip
+            koreader-win32-*-setup.exe
+
+  release:
+
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-26.04
+
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          show-progress: false
+          sparse-checkout: .github
+
+      - name: Download artifacts
+        uses: ./.github/actions/download-artifacts
+        with:
+          regex: '^koreader-win32-'
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --draft --title "KOReader ${GITHUB_REF_NAME} for Windows" --generate-notes \
+            koreader-win32-*.zip koreader-win32-*-setup.exe

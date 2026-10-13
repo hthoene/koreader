@@ -31,7 +31,6 @@ INSTALL_DIR ?= koreader-$(DIST)-$(MACHINE)
 # platform directories
 PLATFORM_DIR=platform
 COMMON_DIR=$(PLATFORM_DIR)/common
-WIN32_DIR=$(PLATFORM_DIR)/win32
 
 define CR3GUI_DATADIR_EXCLUDES
 %/KoboUSBMS.tar.gz
@@ -146,10 +145,6 @@ ifdef ANDROID
 endif
 	@echo "[*] Install update once marker"
 	@echo "# This file indicates that update once patches have not been applied yet." > $(INSTALL_DIR)/koreader/update_once.marker
-ifdef WIN32
-	@echo "[*] Install runtime libraries for win32..."
-	$(SYMLINK) $(WIN32_DIR)/*.dll $(INSTALL_DIR)/koreader/
-endif
 	@echo "[*] Install plugins"
 	$(SYMLINK) plugins $(INSTALL_DIR)/koreader/
 	@echo "[*] Install resources"

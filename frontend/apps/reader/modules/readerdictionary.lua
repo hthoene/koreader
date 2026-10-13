@@ -27,7 +27,6 @@ local C = ffi.C
 local ffiUtil  = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
-local posix = require("ffi/posix")
 local time = require("ui/time")
 local util  = require("util")
 local _ = require("gettext")
@@ -1273,9 +1272,6 @@ function ReaderDictionary:rawSdcv(words, dict_names, fuzzy_search, lookup_progre
         table.insert(args, "--") -- prevent words starting with a "-" to be interpreted as a sdcv option
         util.arrayAppend(args, words)
 
-        local cmd = util.shell_escape(args)
-        -- cmd = "sleep 7 ; " .. cmd     -- uncomment to simulate long lookup time
-
         -- Some sdcv lookups, when using fuzzy search with many dictionaries
         -- and a really bad selected text, can take up to 10 seconds.
         -- It is nice to be able to cancel it when noticing wrong text was
@@ -1289,22 +1285,19 @@ function ReaderDictionary:rawSdcv(words, dict_names, fuzzy_search, lookup_progre
         -- invisible non-event-forwarding TrapWidget is used to catch a tap
         -- and trigger cancellation (invisible so there's no need for repaint
         -- and refresh with the usually fast non-fuzzy search lookups).
-        -- We must ensure we will have some output to be readable (if no
-        -- definition found, sdcv will output some message on stderr, and
-        -- let stdout empty) by appending an "echo":
-        cmd = cmd .. "; echo"
         -- NOTE: Bionic doesn't support rpath, but does honor LD_LIBRARY_PATH...
         --       Give it a shove so it can actually find the STL.
         if android then
             C.setenv("LD_LIBRARY_PATH", android.nativeLibraryDir, 1)
         end
-        local completed, results_str = Trapper:dismissablePopen(cmd, lookup_progress_msg)
+        local completed, results_str = Trapper:dismissablePopen(args, lookup_progress_msg)
         if android then
             -- NOTE: It's unset by default, so this is perfectly fine.
             C.unsetenv("LD_LIBRARY_PATH")
         end
         lookup_cancelled = not completed
-        if results_str and results_str ~= "\n" then -- \n is when lookup was cancelled
+        -- NOTE: if no definition is found, sdcv outputs some message on stderr, and leaves stdout empty.
+        if results_str and results_str ~= "" then
             -- sdcv can return multiple results if we passed multiple words to
             -- the cmdline. In this case, the lookup results for each word are
             -- newline separated. The JSON output doesn't contain raw newlines
@@ -1727,12 +1720,11 @@ local function extractDictionary(archive, extract_to)
         end
     end
     -- Create a temporary directory alongside the final directory.
-    local tmpdir_template = extract_to .. ".XXXXXX"
-    local tmpdir = ffi.new("char[?]", #tmpdir_template + 1, tmpdir_template)
-    if C.mkdtemp(tmpdir) == nil then
-        return false, string.format("mkdtemp(%s): %s", ffi.string(tmpdir), posix.strerror())
+    local tmpdir
+    tmpdir, err = ffiUtil.mkdtemp(extract_to .. ".XXXXXX")
+    if not tmpdir then
+        return false, err
     end
-    tmpdir = ffi.string(tmpdir)
     -- Extract archive.
     local arc = Archiver.Reader:new()
     ok = arc:open(archive)

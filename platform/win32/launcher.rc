@@ -1,0 +1,39 @@
+#include <winver.h>
+
+// Defined by the build system.
+#ifndef KO_VERSION_NUM
+#define KO_VERSION_NUM 0,0,0,0
+#endif
+#ifndef KO_VERSION_STR
+#define KO_VERSION_STR "unknown"
+#endif
+
+1 ICON "koreader.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION KO_VERSION_NUM
+PRODUCTVERSION KO_VERSION_NUM
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "KOReader"
+            VALUE "FileVersion", KO_VERSION_STR
+            VALUE "InternalName", "koreader"
+            VALUE "LegalCopyright", "GNU AGPL v3"
+            VALUE "OriginalFilename", "koreader.exe"
+            VALUE "ProductName", "KOReader"
+            VALUE "ProductVersion", KO_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

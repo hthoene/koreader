@@ -266,6 +266,33 @@ function time.realtime_coarse()
     return tonumber(timespec.tv_sec) * S2FTS + math.floor(tonumber(timespec.tv_nsec) * NS2FTS)
     end
 
+if ffi.os == "Windows" then
+    require("ffi/win32_h")
+
+    -- The performance counter is both cheap and precise (sub-µs).
+    local counter = ffi.new("LARGE_INTEGER")
+    C.QueryPerformanceFrequency(counter)
+    local QPC2FTS = S2FTS / tonumber(counter.QuadPart)
+
+    function time.monotonic()
+        C.QueryPerformanceCounter(counter)
+        return math.floor(tonumber(counter.QuadPart) * QPC2FTS)
+    end
+    time.monotonic_coarse = time.monotonic
+
+    -- FILETIME: 100ns intervals since 1601-01-01, the Unix epoch being at 0x019DB1DE_D53E8000.
+    local filetime = ffi.new("FILETIME")
+    local FT2FTS = FTS_PRECISION / 1e7
+
+    function time.realtime()
+        C.GetSystemTimePreciseAsFileTime(filetime)
+        -- NOTE: subtract the epoch from each half first, so we don't lose precision.
+        return math.floor(((filetime.dwHighDateTime - 0x019DB1DE) * 4294967296
+                           + (filetime.dwLowDateTime - 0xD53E8000)) * FT2FTS)
+    end
+    time.realtime_coarse = time.realtime
+end
+
 --- Since CLOCK_BOOTIME may not be supported, we offer a few aliases with automatic fallbacks to MONOTONIC or REALTIME
 if HAVE_BOOTTIME then
     --- Ditto, but w/ CLOCK_BOOTTIME (will return an fts time set to 0, 0 if the clock source is unsupported, as it's 2.6.39+)

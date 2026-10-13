@@ -28,6 +28,10 @@ end
 
 function filemanagerutil.abbreviate(path)
     if not path then return "" end
+    if path == "/" and jit.os == "Windows" then
+        -- Virtual root, listing the drives (c.f. `ffi/util.realpath`).
+        return _("Drives")
+    end
     if G_reader_settings:nilOrTrue("shorten_home_dir") then
         local home_dir = filemanagerutil.getHomeFolder()
         if path == home_dir or path == home_dir .. "/" then

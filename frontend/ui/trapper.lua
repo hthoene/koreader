@@ -16,6 +16,7 @@ local UIManager = require("ui/uimanager")
 local buffer = require("string.buffer")
 local ffiutil = require("ffi/util")
 local logger = require("logger")
+local util = require("util")
 local _ = require("gettext")
 
 local Trapper = {}
@@ -333,21 +334,44 @@ If there are `cmd` that may not exit, that we would be trying to
 collect indefinitely, the best option would be to compile any `timeout.c`
 and use it as a wrapper.
 
-@string cmd shell `cmd` to execute and get output from
+`cmd` can also be a program and its arguments (an array), in which case no
+shell is involved (on all platforms), and point 2 does not apply.
+
+@param cmd shell `cmd` (string) or program and its arguments (array) to execute and get output from
 @param trap_widget_or_string already shown widget, string, or nil, true or false
 @treturn boolean completed (`true` if not interrupted, `false` if dismissed)
 @treturn string output of command
 ]]
 function Trapper:dismissablePopen(cmd, trap_widget_or_string)
+    -- Start the command, returning a file-like object, and whether
+    -- a trailing newline should be removed from its output.
+    local function popen()
+        if type(cmd) == "string" then
+            return io.popen(cmd, "r"), false
+        end
+        if jit.os == "Windows" then
+            -- No shell (and the end of the output is properly detected).
+            return ffiutil.popen(cmd), false
+        end
+        -- Ensure there will be some output to be readable (c.f. point 2 above).
+        return io.popen(util.shell_escape(cmd) .. "; echo", "r"), true
+    end
+    local function readAll(std_out, strip_trailing_newline)
+        local output = std_out:read("*all")
+        std_out:close()
+        if strip_trailing_newline and output then
+            output = output:gsub("\n$", "")
+        end
+        return output
+    end
+
     local _coroutine = coroutine.running()
     -- assert(_coroutine ~= nil, "Need to be called from a coroutine")
     if not _coroutine then
         logger.warn("unwrapped dismissablePopen(), falling back to blocking io.popen()")
-        local std_out = io.popen(cmd, "r")
+        local std_out, strip_trailing_newline = popen()
         if std_out then
-            local output = std_out:read("*all")
-            std_out:close()
-            return true, output
+            return true, readAll(std_out, strip_trailing_newline)
         end
         return false
     end
@@ -396,7 +420,7 @@ function Trapper:dismissablePopen(cmd, trap_widget_or_string)
     local completed = false
     local output = nil
 
-    local std_out = io.popen(cmd, "r")
+    local std_out, strip_trailing_newline = popen()
     if std_out then
         -- We check regularly if data is available to be read, and we give control
         -- in the meantime to UIManager so our trap_widget's dismiss_callback
@@ -438,8 +462,7 @@ function Trapper:dismissablePopen(cmd, trap_widget_or_string)
             if ffiutil.getNonBlockingReadSize(std_out) ~= 0 then
                 -- Some data is available for reading: read it all,
                 -- but we may block from now on
-                output = std_out:read("*all")
-                std_out:close()
+                output = readAll(std_out, strip_trailing_newline)
                 completed = true
                 break
             end
@@ -539,6 +562,27 @@ function Trapper:dismissableRunInSubprocess(task, trap_widget_or_string, task_re
         -- this callback will resume us at coroutine.yield() below
         -- with a go_on = false
         coroutine.resume(_coroutine, false)
+    end
+
+    if not ffiutil.canFork() then
+        -- No sub-process support (e.g. on Windows): run the task in-process,
+        -- (so it can't be dismissed), like it would be in a sub-process: errors
+        -- are logged, and the trap widget is shown while it runs.
+        logger.dbg("no sub-process support, running task in-process")
+        local results = table.pack(xpcall(task, debug.traceback))
+        if not results[1] then
+            logger.warn("error in task:", results[2])
+        end
+        if own_trap_widget then
+            UIManager:close(trap_widget)
+            if not own_trap_widget_invisible then
+                UIManager:forceRePaint()
+            end
+        end
+        if results[1] then
+            return true, unpack(results, 2, results.n)
+        end
+        return true
     end
 
     local collect_interval_sec = 5 -- collect cancelled cmd every 5 second, no hurry

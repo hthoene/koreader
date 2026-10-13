@@ -96,7 +96,6 @@ is_system() {
     if ! case "$1" in
         Linux) [[ "${OSTYPE}" = linux* ]] ;;
         macOS) [[ "${OSTYPE}" = darwin* ]] ;;
-        Windows) [[ "${OSTYPE}" == 'cygwin' || "${OSTYPE}" == 'msys' ]] ;;
         *) false ;;
     esac then
         die 1 "You need a $1 system to build this package"
@@ -151,10 +150,10 @@ TARGET:
     pocketbookhf
     remarkable
     remarkable-aarch64
-    win32
+    win32                     Windows 10/11 (x86-64), cross-compiled with MinGW-w64 (e.g. llvm-mingw)
 "
 # shellcheck disable=2155
-declare -r RELEASE_TARGETS_HELP_MSG="$(sed -e '/^    \(emulator\|win32\)/d' <<<"${TARGETS_HELP_MSG}")"
+declare -r RELEASE_TARGETS_HELP_MSG="$(sed -e '/^    emulator/d' <<<"${TARGETS_HELP_MSG}")"
 
 function setup_target() {
     TARGET="$1"
@@ -170,7 +169,6 @@ function setup_target() {
             ;;
         linux) is_system Linux ;;
         macos) is_system macOS ;;
-        win32) is_system Windows ;;
         # Devices.
         android-arm | android-arm64 | android-x86 | android-x86_64) ;;
         bookeen) ;;
@@ -180,6 +178,7 @@ function setup_target() {
         pocketbook | pocketbookhf) ;;
         remarkable) ;;
         remarkable-aarch64) ;;
+        win32) ;;
         # Invalid.
         *)
             valid=0
@@ -726,6 +725,7 @@ function docker_create() {
         linux) image=koreader/koappimage ;;
         pocketbook | pocketbookhf) image=koreader/kopb ;;
         remarkable | remarkable-aarch64) image=koreader/koremarkable ;;
+        win32) image=koreader/kowin32 ;;
     esac
     local user uid gid
     if docker_is_rootless; then

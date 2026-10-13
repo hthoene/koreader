@@ -85,8 +85,9 @@ end
 function DataStorage:getFullDataDir()
     if full_data_dir then return full_data_dir end
 
-    if string.sub(self:getDataDir(), 1, 1) == "/" then
-        full_data_dir = self:getDataDir()
+    local dir = self:getDataDir()
+    if string.sub(dir, 1, 1) == "/" or (jit.os == "Windows" and dir:match("^%a:[/\\]")) then
+        full_data_dir = dir
     elseif self:getDataDir() == "." then
         full_data_dir = lfs.currentdir()
     end

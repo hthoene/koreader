@@ -1,7 +1,8 @@
 #!./luajit
 
 -- Enforce line-buffering for stdout (this is the default if it points to a tty, but we redirect to a file on most platforms).
-io.stdout:setvbuf("line")
+-- NOTE: the Windows C runtime does not support line-buffering (it's the same as full buffering).
+io.stdout:setvbuf(jit.os == "Windows" and "no" or "line")
 -- Enforce a reliable locale for numerical representations
 os.setlocale("C", "numeric")
 

@@ -25,8 +25,44 @@ local function isUrl(s)
     return type(s) == "string" and s:match("*?://")
 end
 
-local function isCommand(s)
-    return os.execute("command -v "..s.." >/dev/null") == 0
+local isCommand, runInBackground
+if jit.os == "Windows" then
+    local lfs = require("libs/libkoreader-lfs")
+    local win32 = require("ffi/win32")
+
+    -- No shell: look for the program in the `PATH`.
+    isCommand = function(s)
+        local exts = { "" }
+        for ext in (os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD"):gmatch("[^;]+") do
+            table.insert(exts, ext)
+        end
+        for dir in (os.getenv("PATH") or ""):gmatch("[^;]+") do
+            for _, ext in ipairs(exts) do
+                if lfs.attributes(dir .. "/" .. s .. ext, "mode") == "file" then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    runInBackground = function(args)
+        local proc, err = win32.spawn(args)
+        if not proc then
+            logger.warn("failed to run", args[1], err)
+            return false
+        end
+        proc:detach()
+        return true
+    end
+else
+    isCommand = function(s)
+        return os.execute("command -v "..s.." >/dev/null") == 0
+    end
+
+    runInBackground = function(args)
+        return os.execute(util.shell_escape(args) .. " &") == 0
+    end
 end
 
 local function runCommand(command)
@@ -45,7 +81,10 @@ local function getDesktopDicts()
 end
 
 local function getLinkOpener()
-    if jit.os == "Linux" and isCommand("xdg-open") then
+    if jit.os == "Windows" then
+        -- c.f. `SDL_OpenURL`.
+        return true
+    elseif jit.os == "Linux" and isCommand("xdg-open") then
         return true, "xdg-open"
     elseif jit.os == "OSX" and isCommand("open") then
         return true, "open"
@@ -89,6 +128,13 @@ local Device = Generic:extend{
     stopTextInput = SDL.stopTextInput,
     canOpenLink = getLinkOpener,
     openLink = function(self, link)
+        if jit.os == "Windows" and type(link) == "string" then
+            -- Local paths (e.g. a folder to show in the file explorer) need native separators.
+            if not link:match("^%a[%w+.-]+:") then
+                link = link:gsub("/", "\\")
+            end
+            return SDL.openURL(link)
+        end
         local enabled, tool = getLinkOpener()
         if not enabled or not tool or not link or type(link) ~= "string" then return end
         return runCommand(util.shell_escape{tool, link})
@@ -102,7 +148,7 @@ local Device = Generic:extend{
             if isUrl(app) and getLinkOpener() then
                 ok = self:openLink(app..text)
             elseif isCommand(app) then
-                ok = runCommand(util.shell_escape{app, text} .. " &")
+                ok = runInBackground{app, text}
             end
         end
         if ok and external.when_back_callback then
@@ -141,6 +187,18 @@ local Desktop = Device:extend{
     isDesktop = yes,
     canRestart = notOSX,
     hasExitOptions = notOSX,
+}
+
+local Windows = Device:extend{
+    model = "Windows",
+    isDesktop = yes,
+    canRestart = yes,
+    hasExitOptions = yes,
+    -- Only shell & python scripts are supported (c.f. `Device:canExecuteScript`).
+    canExecuteScript = no,
+    -- Relies on Linux specific APIs.
+    retrieveNetworkInfo = false,
+    home_dir = jit.os == "Windows" and (require("ffi/win32").getKnownFolder("Documents") or os.getenv("USERPROFILE")),
 }
 
 local Flatpak = Device:extend{
@@ -205,8 +263,11 @@ function Device:init()
     self.window.height = self.screen.h
     self.powerd = require("device/sdl/powerd"):new{device = self}
 
-    local ok, re = pcall(self.screen.setWindowIcon, self.screen, "resources/koreader.png")
-    if not ok then logger.warn(re) end
+    -- NOTE: on Windows, the icon embedded in our executable is used (c.f. `SDL3.open`).
+    if jit.os ~= "Windows" then
+        local ok, re = pcall(self.screen.setWindowIcon, self.screen, "resources/koreader.png")
+        if not ok then logger.warn(re) end
+    end
 
     local function makeKeyPressEvent(keycode)
         if not keycode then
@@ -509,6 +570,8 @@ elseif os.getenv("KO_MULTIUSER") then
     return Desktop
 elseif os.getenv("UBUNTU_APPLICATION_ISOLATION") then
     return UbuntuTouch
+elseif jit.os == "Windows" then
+    return Windows
 else
     return Emulator
 end

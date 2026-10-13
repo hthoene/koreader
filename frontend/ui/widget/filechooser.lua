@@ -14,6 +14,9 @@ local _ = require("gettext")
 local Screen = Device.screen
 local T = ffiUtil.template
 
+-- Windows hidden & system files are hidden too (like dot files).
+local isHidden = ffi.os == "Windows" and require("ffi/win32").isHidden or function() return false end
+
 -- NOTE: It's our caller's responsibility to setup a title bar and pass it to us via custom_title_bar (c.f., FileManager)
 local FileChooser = BookList:extend{
     path = lfs.currentdir(),
@@ -112,13 +115,39 @@ function FileChooser:getList(path, collate)
 end
 
 function FileChooser:getPathList(path, collate, dirs, files)
+    if path == "/" and ffi.os == "Windows" then
+        -- Virtual root, listing the drives (c.f. `ffi/util.realpath`).
+        for __, drive in ipairs(require("ffi/win32").getDrives()) do
+            -- NOTE: drives without media (e.g. a card reader) are skipped.
+            local attributes = lfs.attributes(drive.path)
+            if attributes then
+                local item = true
+                if collate then
+                    -- Show the label & free space instead of the content: faster
+                    -- (and more useful), and avoids blocking on slow drives.
+                    item = self:getListItem(nil, drive.letter .. ":", drive.path, attributes, collate)
+                    local available = select(3, ffiUtil.df(drive.path))
+                    local free = available and T(_("%1 free"), util.getFriendlySize(available))
+                    if drive.label and free then
+                        item.mandatory = drive.label .. " · " .. free
+                    else
+                        item.mandatory = drive.label or free
+                    end
+                end
+                table.insert(dirs, item)
+            end
+        end
+        return
+    end
     -- lfs.dir directory without permission will give error
     local ok, iter, dir_obj = pcall(lfs.dir, path)
     if ok then
         unreadable_dir_content[path] = nil
+        -- NOTE: don't double the separator for a root directory (e.g. `/`, or `C:/` on Windows).
+        local prefix = path:sub(-1) == "/" and path or path.."/"
         for f in iter, dir_obj do
-            if FileChooser.show_hidden or not util.stringStartsWith(f, ".") then
-                local fullpath = path.."/"..f
+            local fullpath = prefix..f
+            if FileChooser.show_hidden or not (util.stringStartsWith(f, ".") or isHidden(fullpath)) then
                 local attributes = lfs.attributes(fullpath) or {}
                 local item = true
                 if attributes.mode == "directory" and f ~= "." and f ~= ".."
@@ -279,16 +308,6 @@ function FileChooser:genItemTable(dirs, files, path)
                 bold = true,
                 path = path.."/.",
             })
-        end
-    end
-
-    -- lfs.dir iterated node string may be encoded with some weird codepage on
-    -- Windows we need to encode them to utf-8
-    if ffi.os == "Windows" then
-        for _, v in ipairs(item_table) do
-            if v.text then
-                v.text = ffiUtil.multiByteToUTF8(v.text) or ""
-            end
         end
     end
 

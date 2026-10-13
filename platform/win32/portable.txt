@@ -1,0 +1,10 @@
+KOReader portable mode
+======================
+
+As long as this file exists, KOReader stores its settings and data (reading
+history, caches, dictionaries, fonts, etc.) in this folder, instead of the
+user profile (`%LOCALAPPDATA%\KOReader`).
+
+So the whole folder can be moved around, e.g. on a USB stick.
+
+Delete this file to store the settings and data in the user profile instead.

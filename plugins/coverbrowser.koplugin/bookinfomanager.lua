@@ -420,10 +420,12 @@ function BookInfoManager:getDocProps(filepath)
 end
 
 function BookInfoManager:extractBookInfo(filepath, cover_specs)
-    -- This will be run in a subprocess
+    -- This will be run in a subprocess (except when it's not supported, c.f. extractInBackground)
     -- We use a temporary directory for cre cache (that will not affect parent process),
     -- so we don't fill the main cache with books we're not actually reading
-    if not self.cre_cache_overriden then
+    -- NOTE: when run in-process, we must not change the main process cache settings
+    --       (there's no rendering anyway, as we only load the metadata).
+    if not self.cre_cache_overriden and FFIUtil.canFork() then
         -- We need to init engine (if no crengine book has yet been opened),
         -- so it does not reset our temporary cache dir when we first open
         -- a crengine book for extraction.
@@ -680,10 +682,40 @@ function BookInfoManager:terminateBackgroundJobs()
     for i=1, #self.subprocesses_pids do
         FFIUtil.terminateSubProcess(self.subprocesses_pids[i])
     end
+    if self.in_process_extraction then
+        logger.dbg("stopping in-process extraction")
+        UIManager:unschedule(self.in_process_extraction)
+        self.in_process_extraction = nil
+    end
 end
 
 function BookInfoManager:isExtractingInBackground()
-    return #self.subprocesses_pids > 0
+    return #self.subprocesses_pids > 0 or self.in_process_extraction ~= nil
+end
+
+-- Without sub-process support (e.g. on Windows), extract the books
+-- in-process, one at a time between UI events, so the UI stays responsive.
+function BookInfoManager:extractInProcess(files)
+    local idx = 0
+    local extract
+    extract = function()
+        idx = idx + 1
+        local file = files[idx]
+        logger.dbg("  in-process extracting:", file.filepath)
+        local ok, err = xpcall(self.extractBookInfo, debug.traceback, self, file.filepath, file.cover_specs)
+        if not ok then
+            logger.warn("error extracting book info:", err)
+        end
+        if idx < #files then
+            UIManager:scheduleIn(0.01, extract)
+        else
+            logger.dbg("  in-process extraction done")
+            self.in_process_extraction = nil
+        end
+    end
+    self.in_process_extraction = extract
+    UIManager:scheduleIn(0.01, extract)
+    return true
 end
 
 function BookInfoManager:extractInBackground(files)
@@ -693,6 +725,10 @@ function BookInfoManager:extractInBackground(files)
 
     -- Terminate any previous extraction background task that would be still running
     self:terminateBackgroundJobs()
+
+    if not FFIUtil.canFork() then
+        return self:extractInProcess(files)
+    end
 
     -- Close current handle on sqlite, so it's not shared by both processes
     -- (both processes will re-open one when needed)

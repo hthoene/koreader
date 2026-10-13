@@ -10,6 +10,7 @@ local buffer = require("string.buffer")
 local ffi = require("ffi")
 local C = ffi.C
 local cre -- Delayed loading
+local ffiUtil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local lru = require("ffi/lru")
@@ -80,7 +81,7 @@ local CreDocument = Document:extend{
 function CreDocument.cacheInit()
     -- remove legacy cr3cache directory
     if lfs.attributes("./cr3cache", "mode") == "directory" then
-        os.execute("rm -r ./cr3cache")
+        ffiUtil.purgeDir("./cr3cache")
     end
     -- crengine saves caches on disk for faster re-openings, and cleans
     -- the less recently used ones when this limit is reached
