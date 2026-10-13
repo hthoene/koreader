@@ -1,6 +1,7 @@
 local JSON = require("json")
 local RenderImage = require("ui/renderimage")
 local Screen = require("device").screen
+local Worker = require("worker")
 local ffiutil = require("ffi/util")
 local httpasync = require("httpasync")
 local lfs = require("libs/libkoreader-lfs")
@@ -143,7 +144,9 @@ local function getWikimediaThumbnailStep(width)
 end
 
 -- Get URL content
-local function getUrlContent(url, timeout, maxtime, reuse_cookie)
+-- (with `cookie` not nil: reuse it, i.e. `cached_cookie` or false if none, instead of getting new cookies).
+-- NOTE: this is a module function so it can be run in a sub-process (c.f. `Worker.task`).
+function Wikipedia.getUrlContent(url, timeout, maxtime, cookie)
     local http = require("socket.http")
     local ltn12 = require("ltn12")
     local socket = require("socket")
@@ -165,10 +168,10 @@ local function getUrlContent(url, timeout, maxtime, reuse_cookie)
             sink   = maxtime and socketutil.table_sink(sink) or ltn12.sink.table(sink),
         }
         -- Add headers only when an image_cookie is present, otherwise make a default call without cookie headers
-        if reuse_cookie then
-            logger.dbg("Creating a request with cookie header:", cached_cookie)
+        if cookie ~= nil then
+            logger.dbg("Creating a request with cookie header:", cookie)
             request.headers = {
-                cookie = cached_cookie,
+                cookie = cookie or nil,
                 referer = "https://en.wikipedia.org/"
             }
         end
@@ -194,7 +197,7 @@ local function getUrlContent(url, timeout, maxtime, reuse_cookie)
     socketutil:reset_timeout()
     -- Cache cookies from Wikipedia API responses
     local response_cookie = nil
-    if not reuse_cookie and headers then
+    if cookie == nil and headers then
         response_cookie = extractCookies(headers)
     end
     -- logger.dbg("code:", code)
@@ -287,9 +290,8 @@ function Wikipedia:loadPage(text, lang, page_type, plain, extparams)
         local Trapper = require("ui/trapper")
         local timeout, maxtime = 30, 60
         -- We use dismissableRunInSubprocess with complex return values:
-        completed, success, content, response_cookie = Trapper:dismissableRunInSubprocess(function()
-            return getUrlContent(built_url, timeout, maxtime)
-        end, self.trap_widget)
+        completed, success, content, response_cookie = Trapper:dismissableRunInSubprocess(
+            Worker.task("ui/wikipedia", "getUrlContent", built_url, timeout, maxtime), self.trap_widget)
         if not completed then
             error(self.dismissed_error_code) -- "Interrupted by user"
         end
@@ -298,7 +300,7 @@ function Wikipedia:loadPage(text, lang, page_type, plain, extparams)
         -- blocking without one (but 20s may be needed to fetch the main HTML
         -- page of big articles when making an EPUB).
         local timeout, maxtime = 20, 60
-        success, content, response_cookie = getUrlContent(built_url, timeout, maxtime)
+        success, content, response_cookie = Wikipedia.getUrlContent(built_url, timeout, maxtime)
     end
     if not success then
         error(content)
@@ -491,27 +493,15 @@ local function image_load_bb_func(image, highres)
 
     logger.dbg("fetching", source)
     local Trapper = require("ui/trapper")
-    -- We use dismissableRunInSubprocess with simple string return value to
-    -- avoid serialization/deserialization of a long string of image bytes
-    local completed, data = Trapper:dismissableRunInSubprocess(function()
-        local success, data = getUrlContent(source, timeout, maxtime, true) -- reuse_cookie
-        -- With simple string value, we're not able to return the failure
-        -- reason, so log it here
-        if not success then
-            logger.warn("failed fetching image from", source, ":", data)
-        end
-        return success and data or nil
-    end, trap_widget, true) -- task_returns_simple_string=true
-
-    local success = data and true or false -- guess success from data
+    local completed, success, data = Trapper:dismissableRunInSubprocess(
+        Worker.task("ui/wikipedia", "getUrlContent", source, timeout, maxtime, cached_cookie or false), trap_widget)
 
     if not completed then
         logger.dbg("image fetching interrupted by user")
         return true -- let caller know it was interrupted
     end
     if not success then
-        -- log it again (on Android, log from sub-process seem to not work)
-        logger.warn("failed fetching image from", source)
+        logger.warn("failed fetching image from", source, ":", data)
         return
     end
     logger.dbg(" fetched", #data)

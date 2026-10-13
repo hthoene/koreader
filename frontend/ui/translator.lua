@@ -15,6 +15,7 @@ local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local JSON = require("json")
 local Screen = require("device").screen
+local Worker = require("worker")
 local ffiUtil  = require("ffi/util")
 local logger = require("logger")
 local util = require("util")
@@ -663,9 +664,9 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
     end
 
     local Trapper = require("ui/trapper")
-    local completed, result = Trapper:dismissableRunInSubprocess(function()
-        return self:loadPage(text, target_lang, source_lang)
-    end, _("Querying translation service…"))
+    local completed, result = Trapper:dismissableRunInSubprocess(
+        Worker.task("ui/translator", ":loadPage", text, target_lang, source_lang),
+        _("Querying translation service…"))
     if not completed then
         UIManager:show(InfoMessage:new{
             text = _("Translation interrupted.")

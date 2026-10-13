@@ -17,6 +17,7 @@ local ReadCollection = require("readcollection")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Worker = require("worker")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local rapidjson = require("rapidjson")
@@ -24,6 +25,9 @@ local sha = require("ffi/sha2")
 local util = require("util")
 local _ = require("gettext")
 local T = FFIUtil.template
+
+-- Our directory (to find our modules when running tasks in a sub-process).
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
 
 require("ffi/zeromq_h")
 
@@ -147,7 +151,8 @@ function CalibreWireless:init()
     self.calibre = {}
 end
 
-local function find_calibre_server()
+-- NOTE: this is a module function so it can be run in a sub-process (c.f. `Worker.task`).
+function CalibreWireless.findCalibreServer()
     local socket = require("socket")
     local udp = socket.udp4()
     udp:setoption("broadcast", true)
@@ -290,7 +295,9 @@ function CalibreWireless:connect()
     else
         logger.info("calibre: searching for a server")
         Trapper:info(_("Searching for a calibre server… (tap to cancel)"))
-        ok, host, port = Trapper:dismissableRunInSubprocess(find_calibre_server)
+        local task = Worker.task("wireless", "findCalibreServer")
+        task.path = plugin_dir
+        ok, host, port = Trapper:dismissableRunInSubprocess(task)
         if not ok then
             -- Canceled.
             return

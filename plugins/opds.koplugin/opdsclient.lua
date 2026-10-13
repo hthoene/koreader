@@ -1,7 +1,10 @@
+local CookieJar = require("cookiejar")
 local http = require("socket.http")
+local ltn12 = require("ltn12")
 local socket = require("socket")
 local socketutil = require("socketutil")
 local url = require("socket.url")
+local util = require("util")
 
 local OPDSClient = {}
 OPDSClient.__index = OPDSClient
@@ -85,6 +88,48 @@ function OPDSClient:request(request)
     end
 
     return nil, nil, "Too many redirects"
+end
+
+--- Download a file (it's removed on failure, i.e. if the HTTP code is not 200).
+-- @treturn int HTTP code (or nil)
+-- @treturn table response headers
+-- @treturn string HTTP status (or error message)
+function OPDSClient:download(local_path, remote_url, username, password)
+    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    local code, headers, status = self:request{
+        url      = remote_url,
+        headers  = {
+            ["Accept-Encoding"] = "identity",
+        },
+        sink     = ltn12.sink.file(io.open(local_path, "wb")),
+        username = username,
+        password = password,
+    }
+    socketutil:reset_timeout()
+    if code ~= 200 then
+        util.removeFile(local_path)
+    end
+    return code, headers, status
+end
+
+--[[--
+Download files, with the given cookies (so this can be run in a sub-process, c.f. `Worker.task`).
+
+@tparam {table,...} items files to download (`{ file = local_path, url = remote_url, username = …, password = … }`)
+@tparam table cookies cookies (from a `CookieJar`)
+@treturn table the files successfully downloaded (`downloaded[local_path] = true`)
+]]
+function OPDSClient.downloadFiles(items, cookies)
+    local cookie_jar = CookieJar:new()
+    cookie_jar.cookies = cookies or {}
+    local client = OPDSClient:new{ cookie_jar = cookie_jar }
+    local downloaded = {}
+    for _, item in ipairs(items) do
+        if client:download(item.file, item.url, item.username, item.password) == 200 then
+            downloaded[item.file] = true
+        end
+    end
+    return downloaded
 end
 
 return OPDSClient

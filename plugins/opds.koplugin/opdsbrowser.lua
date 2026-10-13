@@ -19,6 +19,7 @@ local SpinWidget = require("ui/widget/spinwidget")
 local TextViewer = require("ui/widget/textviewer")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
+local Worker = require("worker")
 local ffiUtil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
@@ -29,6 +30,9 @@ local util = require("util")
 local _ = require("gettext")
 local N_ = _.ngettext
 local T = ffiUtil.template
+
+-- Our directory (to find our modules when running tasks in a sub-process).
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
 
 local OPDSBrowser = Menu:extend{
     opds20_feed          = "application/opds+json, application/atom+xml;profile=opds-catalog, */*",
@@ -1360,17 +1364,7 @@ function OPDSBrowser:downloadFile(local_path, remote_url, username, password, ca
     local code, headers, status
     local parsed = url.parse(remote_url)
     if parsed.scheme == "http" or parsed.scheme == "https" then
-        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
-        code, headers, status = self:getHttpClient():request {
-            url      = remote_url,
-            headers  = {
-                ["Accept-Encoding"] = "identity",
-            },
-            sink     = ltn12.sink.file(io.open(local_path, "w")),
-            username = username,
-            password = password,
-        }
-        socketutil:reset_timeout()
+        code, headers, status = self:getHttpClient():download(local_path, remote_url, username, password)
     else
         UIManager:show(InfoMessage:new {
             text = T(_("Invalid protocol:\n%1"), parsed.scheme),
@@ -1383,13 +1377,11 @@ function OPDSBrowser:downloadFile(local_path, remote_url, username, password, ca
         end
         return true
     elseif code == 302 and remote_url:match("^https") and headers.location:match("^http[^s]") then
-        util.removeFile(local_path)
         UIManager:show(InfoMessage:new{
             text = T(_("Insecure HTTPS → HTTP downgrade attempted by redirect from:\n\n'%1'\n\nto\n\n'%2'.\n\nPlease inform the server administrator that many clients disallow this because it could be a downgrade attack."), BD.url(remote_url), BD.url(headers.location)),
             icon = "notice-warning",
         })
     else
-        util.removeFile(local_path)
         logger.dbg("OPDSBrowser:downloadFile: Request failed:", status or code)
         logger.dbg("OPDSBrowser:downloadFile: Response headers:", headers)
         UIManager:show(InfoMessage:new {
@@ -1398,6 +1390,17 @@ function OPDSBrowser:downloadFile(local_path, remote_url, username, password, ca
                 status or code or "network unreachable"),
         })
     end
+end
+
+-- Task to download files in a sub-process (c.f. `OPDSClient.downloadFiles`)
+function OPDSBrowser:downloadFilesTask(items)
+    local files = {}
+    for i, item in ipairs(items) do
+        files[i] = { file = item.file, url = item.url, username = item.username, password = item.password }
+    end
+    local task = Worker.task("opdsclient", "downloadFiles", files, self:getHttpClient().cookie_jar.cookies)
+    task.path = plugin_dir
+    return task
 end
 
 -- Menu action on item tap (Download a book / Show subcatalog / Search in catalog)
@@ -1731,15 +1734,7 @@ function OPDSBrowser:downloadDownloadList()
     local info = InfoMessage:new{ text = _("Downloading… (tap to cancel)") }
     UIManager:show(info)
     UIManager:forceRePaint()
-    local completed, downloaded = Trapper:dismissableRunInSubprocess(function()
-        local dl = {}
-        for _, item in ipairs(self.downloads) do
-            if self:downloadFile(item.file, item.url, item.username, item.password) then
-                dl[item.file] = true
-            end
-        end
-        return dl
-    end, info)
+    local completed, downloaded = Trapper:dismissableRunInSubprocess(self:downloadFilesTask(self.downloads), info)
     if completed then
         UIManager:close(info)
     end
@@ -2109,22 +2104,19 @@ function OPDSBrowser:downloadPendingSyncs()
         local info = InfoMessage:new{ text = _("Downloading… (tap to cancel)") }
         UIManager:show(info)
         UIManager:forceRePaint()
-        local completed, downloaded, duplicate_list = Trapper:dismissableRunInSubprocess(function()
-            local dl = {}
-            local dupe_list = {}
-            for _, item in ipairs(dl_list) do
-                if self.sync_server_list[item.catalog] then
-                    if lfs.attributes(item.file) and not self.sync_force then
-                        table.insert(dupe_list, item)
-                    else
-                        if self:downloadFile(item.file, item.url, item.username, item.password) then
-                            dl[item.file] = true
-                        end
-                    end
+        local to_download = {}
+        local dupe_list = {}
+        for _, item in ipairs(dl_list) do
+            if self.sync_server_list[item.catalog] then
+                if lfs.attributes(item.file) and not self.sync_force then
+                    table.insert(dupe_list, item)
+                else
+                    table.insert(to_download, item)
                 end
             end
-            return dl, dupe_list
-        end, info)
+        end
+        local completed, downloaded = Trapper:dismissableRunInSubprocess(self:downloadFilesTask(to_download), info)
+        local duplicate_list = completed and dupe_list or nil
 
         if completed then
             UIManager:close(info)

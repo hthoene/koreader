@@ -1,6 +1,7 @@
 local CacheSQLite = require("cachesqlite")
 local DataStorage = require("datastorage")
 local Version = require("version")
+local Worker = require("worker")
 local ffiutil = require("ffi/util")
 local http = require("socket.http")
 local lfs = require("libs/libkoreader-lfs")
@@ -14,6 +15,9 @@ local time = require("ui/time")
 local util = require("util")
 local _ = require("gettext")
 local T = ffiutil.template
+
+-- Our directory (to find our modules when running tasks in a sub-process).
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
 
 local function removeSubstring(str, substr)
     local iter = 1
@@ -215,7 +219,8 @@ local function build_cookies(cookies)
     return s
 end
 
-local function getUrlContent(url, cookies, timeout, maxtime, add_to_cache, extra_headers)
+-- NOTE: this is a module function so it can be run in a sub-process (c.f. `Worker.task`).
+function EpubDownloadBackend.getUrlContent(url, cookies, timeout, maxtime, add_to_cache, extra_headers)
     local parsed_url = socket_url.parse(url)
     local path = parsed_url.path
     if path then
@@ -340,7 +345,7 @@ end
 
 function EpubDownloadBackend:getResponseAsString(url, cookies, add_to_cache, extra_headers)
     logger.dbg("EpubDownloadBackend:getResponseAsString(", url, ")")
-    local success, content_type, content = getUrlContent(url, cookies, nil, nil, add_to_cache, extra_headers)
+    local success, content_type, content = EpubDownloadBackend.getUrlContent(url, cookies, nil, nil, add_to_cache, extra_headers)
     if (success) then
         return content_type, content
     else
@@ -362,15 +367,15 @@ function EpubDownloadBackend:loadPage(url, cookies, extra_headers)
         local Trapper = require("ui/trapper")
         local timeout, maxtime = 30, 60
         -- We use dismissableRunInSubprocess with complex return values:
-        completed, success, content = Trapper:dismissableRunInSubprocess(function()
-            return getUrlContent(url, cookies, timeout, maxtime, nil, extra_headers)
-        end, self.trap_widget)
+        local task = Worker.task("epubdownloadbackend", "getUrlContent", url, cookies, timeout, maxtime, nil, extra_headers)
+        task.path = plugin_dir
+        completed, success, content_type, content = Trapper:dismissableRunInSubprocess(task, self.trap_widget)
         if not completed then
             error(self.dismissed_error_code) -- "Interrupted by user"
         end
     else
         local timeout, maxtime = 10, 60
-        success, content_type, content = getUrlContent(url, cookies, timeout, maxtime, nil, extra_headers)
+        success, content_type, content = EpubDownloadBackend.getUrlContent(url, cookies, timeout, maxtime, nil, extra_headers)
     end
     logger.dbg("success:", success, "type(content):", type(content), "content:", type(content) == "string" and content:sub(1, 500), "...")
     if not success then
