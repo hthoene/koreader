@@ -24,6 +24,8 @@ jobs:
 
   update_documentation:
     name: Update documentation
+    # Upstream only (not in forks, which lack its secrets).
+    if: github.repository == 'koreader/koreader'
     environment: documentation
     runs-on: ubuntu-26.04
     container: &CONTAINER
@@ -55,6 +57,8 @@ jobs:
 
   update_translations:
     name: Update translations
+    # Upstream only (not in forks, which lack its secrets).
+    if: github.repository == 'koreader/koreader'
     environment: translations
     runs-on: ubuntu-26.04
     container: *CONTAINER

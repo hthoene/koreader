@@ -25,6 +25,8 @@ jobs:
 
   upload_to_ota:
     name: Upload to OTA
+    # Upstream only (not in forks, which lack its secrets).
+    if: github.repository == 'koreader/koreader'
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout
