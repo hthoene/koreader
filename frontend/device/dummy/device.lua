@@ -20,6 +20,11 @@ function Device:init()
         device = self,
         debug = logger.dbg,
     }
+    -- No input either.
+    self.input = require("device/input"):new{
+        device = self,
+        input = {},
+    }
     Generic.init(self)
 end
 

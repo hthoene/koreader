@@ -13,6 +13,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local TrapWidget = require("ui/widget/trapwidget")
 local UIManager = require("ui/uimanager")
+local Worker = require("worker")
 local buffer = require("string.buffer")
 local ffiutil = require("ffi/util")
 local logger = require("logger")
@@ -514,16 +515,29 @@ Notes and limitations:
    an invisible TrapWidget will be used instead (if nil or true, the event will be
    resent; if false, the event will not be resent).
 
-@param task lua function to execute and get return values from
+5) task can also be a @{worker.task|worker task} (rather than a function), which can be
+   run in a sub-process on all platforms (even those without `fork()`, i.e. Windows),
+   but with more constraints (it can only rely on its own arguments). Otherwise, without
+   `fork()`, the function is run in-process (so it can't be dismissed).
+
+@param task lua function (or @{worker.task|worker task}) to execute and get return values from
 @param trap_widget_or_string already shown widget, string, or nil, true or false
 @boolean task_returns_simple_string[opt=false] true if task returns a single string
 @treturn boolean completed (`true` if not interrupted, `false` if dismissed)
 @return ... return values of task
 ]]
 function Trapper:dismissableRunInSubprocess(task, trap_widget_or_string, task_returns_simple_string)
+    local is_worker_task = type(task) == "table"
+    if is_worker_task then
+        -- (The results of a worker task are always serialized.)
+        task_returns_simple_string = false
+    end
     local _coroutine = coroutine.running()
     if not _coroutine then
         logger.warn("unwrapped dismissableRunInSubprocess(), falling back to blocking in-process run")
+        if is_worker_task then
+            return true, Worker.runTask(task)
+        end
         return true, task()
     end
 
@@ -564,11 +578,22 @@ function Trapper:dismissableRunInSubprocess(task, trap_widget_or_string, task_re
         coroutine.resume(_coroutine, false)
     end
 
-    if not ffiutil.canFork() then
-        -- No sub-process support (e.g. on Windows): run the task in-process,
-        -- (so it can't be dismissed), like it would be in a sub-process: errors
-        -- are logged, and the trap widget is shown while it runs.
-        logger.dbg("no sub-process support, running task in-process")
+    local pid, parent_read_fd
+    if is_worker_task then
+        pid, parent_read_fd = Worker.runInSubProcess(task, true)
+        if not pid then
+            logger.warn("cannot run task in a sub-process:", parent_read_fd)
+            local worker_task = task
+            task = function() return Worker.runTask(worker_task) end
+        end
+    end
+
+    if not pid and (is_worker_task or not ffiutil.canFork()) then
+        -- No sub-process (the worker could not be started, or the function can't be run
+        -- in one without `fork()`, e.g. on Windows): run the task in-process (so it can't
+        -- be dismissed), like it would be in a sub-process: errors are logged, and the
+        -- trap widget is shown while it runs.
+        logger.dbg("no sub-process, running task in-process")
         local results = table.pack(xpcall(task, debug.traceback))
         if not results[1] then
             logger.warn("error in task:", results[2])
@@ -592,31 +617,33 @@ function Trapper:dismissableRunInSubprocess(task, trap_widget_or_string, task_re
     local completed = false
     local ret_values
 
-    local pid, parent_read_fd = ffiutil.runInSubProcess(function(pid, child_write_fd)
-        local output_str = ""
-        if task_returns_simple_string then
-            -- task is assumed to return only a string or nil,
-            -- so avoid a possibly expensive ser/deser roundtrip.
-            local result = task()
-            if type(result) == "string" then
-                output_str = result
-            elseif result ~= nil then
-                logger.warn("returned value from task is not a string:", result)
-            end
-        else
-            -- task may return complex data structures, that we serialize.
-            -- NOTE: LuaJIT's serializer currently doesn't support:
-            --       functions, coroutines, non-numerical FFI cdata & full userdata.
-            local results = table.pack(task())
-            local ok, str = pcall(buffer.encode, results)
-            if not ok then
-                logger.warn("cannot serialize", tostring(results), "->", str)
+    if not is_worker_task then
+        pid, parent_read_fd = ffiutil.runInSubProcess(function(_pid, child_write_fd)
+            local output_str = ""
+            if task_returns_simple_string then
+                -- task is assumed to return only a string or nil,
+                -- so avoid a possibly expensive ser/deser roundtrip.
+                local result = task()
+                if type(result) == "string" then
+                    output_str = result
+                elseif result ~= nil then
+                    logger.warn("returned value from task is not a string:", result)
+                end
             else
-                output_str = str
+                -- task may return complex data structures, that we serialize.
+                -- NOTE: LuaJIT's serializer currently doesn't support:
+                --       functions, coroutines, non-numerical FFI cdata & full userdata.
+                local results = table.pack(task())
+                local ok, str = pcall(buffer.encode, results)
+                if not ok then
+                    logger.warn("cannot serialize", tostring(results), "->", str)
+                else
+                    output_str = str
+                end
             end
-        end
-        ffiutil.writeToFD(child_write_fd, output_str, true)
-    end, true) -- with_pipe = true
+            ffiutil.writeToFD(child_write_fd, output_str, true)
+        end, true) -- with_pipe = true
+    end
 
     if pid then
         -- We check regularly if subprocess is done, and we give control
@@ -678,6 +705,10 @@ function Trapper:dismissableRunInSubprocess(task, trap_widget_or_string, task_re
                     local ret_str = ffiutil.readAllFromFD(parent_read_fd)
                     if task_returns_simple_string then
                         ret_values = ret_str
+                    elseif ret_str == "" then
+                        -- Task failed (or `getNonBlockingReadSize` reports the end of the
+                        -- output of a sub-process that exited without writing anything).
+                        logger.dbg("no data from subprocess")
                     else
                         local ok, t = pcall(buffer.decode, ret_str)
                         if ok and t then
