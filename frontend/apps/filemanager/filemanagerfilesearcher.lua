@@ -11,6 +11,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local UIManager = require("ui/uimanager")
+local Worker = require("worker")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
@@ -164,9 +165,17 @@ function FileSearcher:doSearch()
         local info = InfoMessage:new{ text = _("Searching… (tap to cancel)") }
         UIManager:show(info)
         UIManager:forceRePaint()
-        local completed, dirs, files, no_metadata_count, invalid_pattern = Trapper:dismissableRunInSubprocess(function()
-            return self:getList()
-        end, info)
+        local completed, dirs, files, no_metadata_count, invalid_pattern = Trapper:dismissableRunInSubprocess(
+            Worker.task("apps/filemanager/filemanagerfilesearcher", "findFiles", {
+                search_path = FileSearcher.search_path,
+                search_string = FileSearcher.search_string,
+                case_sensitive = self.case_sensitive,
+                use_patterns = self.use_patterns,
+                include_metadata = self.include_metadata,
+                include_content = self.include_content,
+                include_subfolders = self.include_subfolders,
+                coverbrowser_path = self.ui.coverbrowser and self.ui.coverbrowser.path,
+            }), info)
         if not completed then return end
         UIManager:close(info)
         if invalid_pattern then
@@ -195,6 +204,24 @@ function FileSearcher:doSearch()
     else
         self:showSearchResultsMessage(true)
     end
+end
+
+--[[--
+Search files, with the given options (c.f. `doSearch`): a module function, so it can be run in a
+sub-process (c.f. `Worker.task`), without depending on the state of the main process.
+]]
+function FileSearcher.findFiles(options)
+    FileSearcher.search_path = options.search_path
+    FileSearcher.search_string = options.search_string
+    local searcher = FileSearcher:extend{
+        ui = { bookinfo = require("apps/filemanager/filemanagerbookinfo").newHeadless(options.coverbrowser_path) },
+        case_sensitive = options.case_sensitive,
+        use_patterns = options.use_patterns,
+        include_metadata = options.include_metadata,
+        include_content = options.include_content,
+        include_subfolders = options.include_subfolders,
+    }
+    return searcher:getList()
 end
 
 function FileSearcher:getList()

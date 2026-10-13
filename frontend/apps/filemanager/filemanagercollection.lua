@@ -13,6 +13,7 @@ local ReadCollection = require("readcollection")
 local SortWidget = require("ui/widget/sortwidget")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Worker = require("worker")
 local ffiUtil = require("ffi/util")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local util = require("util")
@@ -1521,63 +1522,84 @@ function FileManagerCollection:onShowCollectionsSearchDialog(search_str, coll_na
     return true
 end
 
-function FileManagerCollection:searchCollections(coll_name)
+--[[--
+Search the files of collections (`{ { order = …, items = { { file = …, order = … }, … } }, … }`), with the
+given options (c.f. `searchCollections`): a module function, so it can be run in a sub-process
+(c.f. `Worker.task`), without depending on the state of the main process.
+]]
+function FileManagerCollection.findFiles(collections, options)
+    local bookinfo = require("apps/filemanager/filemanagerbookinfo").newHeadless(options.coverbrowser_path)
     local function isFileMatch(file)
-        if self.search_str == "*" then
+        if options.search_str == "*" then
             return true
         end
-        if util.stringSearch(file:gsub(".*/", ""), self.search_str, self.case_sensitive) ~= 0 then
+        if util.stringSearch(file:gsub(".*/", ""), options.search_str, options.case_sensitive) ~= 0 then
             return true
         end
         if not DocumentRegistry:hasProvider(file) then
             return false
         end
-        local book_props = self.ui.bookinfo:getDocProps(file, nil, true)
-        if next(book_props) ~= nil and self.ui.bookinfo:findInProps(book_props, self.search_str, self.case_sensitive) then
+        local book_props = bookinfo:getDocProps(file, nil, true)
+        if next(book_props) ~= nil and bookinfo:findInProps(book_props, options.search_str, options.case_sensitive) then
             return true
         end
-        if self.include_content then
+        if options.include_content then
             local ReaderUI = require("apps/reader/readerui")
-            return ReaderUI:findTextInBookContent(self, file, self.search_str)
+            return ReaderUI:findTextInBookContent(options, file, options.search_str)
         end
         return false
     end
 
-    local collections = coll_name and { [coll_name] = ReadCollection.coll[coll_name] } or ReadCollection.coll
-    local Trapper = require("ui/trapper")
-    local info = InfoMessage:new{ text = _("Searching… (tap to cancel)") }
-    UIManager:show(info)
-    UIManager:forceRePaint()
-    local completed, files_found, files_found_order = Trapper:dismissableRunInSubprocess(function()
-        local match_cache, _files_found, _files_found_order = {}, {}, {}
-        for collection_name, coll in pairs(collections) do
-            local coll_order = ReadCollection.coll_settings[collection_name].order
-            for _, item in pairs(coll) do
-                local file = item.file
-                if match_cache[file] == nil then -- a book can be included to several collections
-                    match_cache[file] = isFileMatch(file)
-                end
-                if match_cache[file] then
-                    local order_idx = _files_found[file]
-                    if order_idx == nil then -- new
-                        table.insert(_files_found_order, {
-                            file = file,
-                            found_pos = match_cache[file],
-                            coll_order = coll_order,
-                            item_order = item.order,
-                        })
-                        _files_found[file] = #_files_found_order -- order_idx
-                    else -- previously found, update orders
-                        if _files_found_order[order_idx].coll_order > coll_order then
-                            _files_found_order[order_idx].coll_order = coll_order
-                            _files_found_order[order_idx].item_order = item.order
-                        end
+    local match_cache, files_found, files_found_order = {}, {}, {}
+    for _, coll in ipairs(collections) do
+        local coll_order = coll.order
+        for _, item in ipairs(coll.items) do
+            local file = item.file
+            if match_cache[file] == nil then -- a book can be included to several collections
+                match_cache[file] = isFileMatch(file)
+            end
+            if match_cache[file] then
+                local order_idx = files_found[file]
+                if order_idx == nil then -- new
+                    table.insert(files_found_order, {
+                        file = file,
+                        found_pos = match_cache[file],
+                        coll_order = coll_order,
+                        item_order = item.order,
+                    })
+                    files_found[file] = #files_found_order -- order_idx
+                else -- previously found, update orders
+                    if files_found_order[order_idx].coll_order > coll_order then
+                        files_found_order[order_idx].coll_order = coll_order
+                        files_found_order[order_idx].item_order = item.order
                     end
                 end
             end
         end
-        return _files_found, _files_found_order
-    end, info)
+    end
+    return files_found, files_found_order
+end
+
+function FileManagerCollection:searchCollections(coll_name)
+    local collections = {}
+    for collection_name, coll in pairs(coll_name and { [coll_name] = ReadCollection.coll[coll_name] } or ReadCollection.coll) do
+        local items = {}
+        for _, item in pairs(coll) do
+            table.insert(items, { file = item.file, order = item.order })
+        end
+        table.insert(collections, { order = ReadCollection.coll_settings[collection_name].order, items = items })
+    end
+    local Trapper = require("ui/trapper")
+    local info = InfoMessage:new{ text = _("Searching… (tap to cancel)") }
+    UIManager:show(info)
+    UIManager:forceRePaint()
+    local completed, files_found, files_found_order = Trapper:dismissableRunInSubprocess(
+        Worker.task("apps/filemanager/filemanagercollection", "findFiles", collections, {
+            search_str = self.search_str,
+            case_sensitive = self.case_sensitive,
+            include_content = self.include_content,
+            coverbrowser_path = self.ui.coverbrowser and self.ui.coverbrowser.path,
+        }), info)
     if not completed then return end
     UIManager:close(info)
 

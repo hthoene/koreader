@@ -59,6 +59,25 @@ function BookInfo:init()
     end
 end
 
+--[[--
+A BookInfo usable without the UI of the main process (e.g. in a sub-process, c.f. `Worker.task`),
+to get book metadata (from the cover browser's cache, when the path of its plugin is given).
+]]
+function BookInfo.newHeadless(coverbrowser_path)
+    local ui = {}
+    if coverbrowser_path then
+        -- (c.f. `CoverBrowser.getDocProps`)
+        if not package.loaded["bookinfomanager"] then -- (in a new process)
+            require("worker").addPath(coverbrowser_path)
+        end
+        local BookInfoManager = require("bookinfomanager")
+        ui.coverbrowser = {
+            getDocProps = function(file) return BookInfoManager:getDocProps(file) end,
+        }
+    end
+    return BookInfo:new{ ui = ui }
+end
+
 function BookInfo:addToMainMenu(menu_items)
     menu_items.book_info = {
         text = self.title,
