@@ -717,6 +717,15 @@ end
 --- Computes the currently available memory
 ---- @treturn tuple of ints: memavailable, memtotal (or nil, nil on unsupported platforms).
 function util.calcFreeMem()
+    if jit.os == "Windows" then
+        local memavailable, memtotal = require("ffi/win32").getMemoryStatus()
+        if not memavailable then
+            return nil, nil
+        end
+        -- Leave a bit of margin (like with `MemAvailable` below).
+        return math.floor(memavailable * 0.85), memtotal
+    end
+
     local memtotal, memfree, memavailable, buffers, cached
 
     local meminfo = io.open("/proc/meminfo", "r")
