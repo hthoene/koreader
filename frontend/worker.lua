@@ -4,7 +4,8 @@ Run tasks in a sub-process (so they don't block the UI, and can be interrupted).
 Unlike @{ffi.util.runInSubProcess}, tasks are not functions, but descriptions of a function
 call (made with @{Worker.task}), so they can also be run where `fork()` is not available
 (i.e. on Windows): in a new LuaJIT process (a "worker"), which is set up like KOReader
-(with the same settings and language), but with a dummy (headless) device.
+(with the same settings and language), but with a dummy (headless) device, and without
+applying user patches.
 
 So a task:
 
