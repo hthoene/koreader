@@ -45,11 +45,14 @@ offers to open that log.
 
 ## Differences with other platforms
 
-Windows has no `fork()`, so tasks that are run in a background process on
-other platforms are run in KOReader's own process instead: e.g. cover and
-metadata extraction (cover browser), page thumbnails (book map / page browser:
-showing only the page contents, without highlights), etc. This means that
-KOReader may be a little less responsive while those tasks are running.
+Windows has no `fork()`: the background tasks (cover and metadata extraction,
+Wikipedia, translations, OPDS & news downloads, file & collection searches…)
+are run in "worker" processes instead (c.f. `frontend/worker.lua`), so they
+don't block the UI, and can be cancelled, like on other platforms.
+
+Only the tasks that need the document currently opened are run in KOReader's
+own process: page thumbnails (book map / page browser, showing only the page
+contents, without highlights) and search in the current book.
 
 The following plugins are not available: SSH, terminal, time sync, external
 keyboard, auto frontlight.
@@ -66,6 +69,9 @@ keyboard, auto frontlight.
 - On the Lua side, paths use forward slashes (`C:/Users/…`), Windows specific
   code lives in `ffi/win32.lua` (koreader-base), and some POSIX APIs are mapped
   to their equivalent in the Universal C Runtime (`ffi/posix_h_win32.lua`).
+- Worker processes are `luajit.exe` instances, set up like KOReader (with the
+  same settings), but headless: they get their task from their standard
+  input, and send back its results on their standard output.
 
 ## Building
 
